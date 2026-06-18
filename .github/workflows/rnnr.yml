@@ -1,0 +1,85 @@
+name: Rnnr
+run-name: Rnnrs for pipeline ${{ github.event.client_payload.pipeline_id }}
+
+on:
+  repository_dispatch:
+    types: [run-gitlab-runners]
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      macos_matrix:  ${{ steps.gen.outputs.macos_matrix }}
+      macos_n:       ${{ steps.gen.outputs.macos_n }}
+      docker_matrix: ${{ steps.gen.outputs.docker_matrix }}
+      docker_n:      ${{ steps.gen.outputs.docker_n }}
+    steps:
+      - name: Build per-pool fan-out matrices
+        id: gen
+        env:
+          # client_payload is untrusted + unmasked: pass via env, sanitize, clamp.
+          RAW_MACOS:  ${{ github.event.client_payload.macos }}
+          RAW_DOCKER: ${{ github.event.client_payload.docker }}
+        run: |
+          set -euo pipefail
+          clamp() { local n="${1//[^0-9]/}"; n="${n:-0}"; (( n > 20 )) && n=20; printf '%s' "$n"; }
+          mk()    { jq -nc --argjson n "$1" '{i: [range(1; $n + 1)]}'; }
+          m="$(clamp "${RAW_MACOS}")"
+          d="$(clamp "${RAW_DOCKER}")"
+          {
+            echo "macos_n=${m}"
+            echo "docker_n=${d}"
+            echo "macos_matrix=$(mk "$m")"
+            echo "docker_matrix=$(mk "$d")"
+          } >> "$GITHUB_OUTPUT"
+          echo "macOS runners: ${m}   docker runners: ${d}"
+
+  runner-macos:
+    needs: setup
+    if: ${{ needs.setup.outputs.macos_n != '0' }}   # gate avoids empty-matrix error
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.macos_matrix) }}
+    name: macos-${{ matrix.i }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Ephemeral GitLab Runner (shell)
+        uses: your-handle/gitlab-runner-action@v1
+        with:
+          runner-token: ${{ secrets.GITLAB_RUNNER_TOKEN_MACOS }}
+          description: gh-${{ github.run_id }}-macos-${{ matrix.i }}
+          # executor auto-resolves to shell on macOS
+          wait-timeout: '900'
+          max-builds: '1'
+
+  runner-docker:
+    needs: setup
+    if: ${{ needs.setup.outputs.docker_n != '0' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.docker_matrix) }}
+    name: docker-${{ matrix.i }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Reclaim disk (optional, ~60GB)
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+      - name: Ephemeral GitLab Runner (docker)
+        uses: your-handle/gitlab-runner-action@v1
+        with:
+          runner-token: ${{ secrets.GITLAB_RUNNER_TOKEN_DOCKER }}
+          executor: docker
+          docker-image: docker:27
+          docker-privileged: 'true'
+          description: gh-${{ github.run_id }}-docker-${{ matrix.i }}
+          wait-timeout: '600'
+          max-builds: '1'
