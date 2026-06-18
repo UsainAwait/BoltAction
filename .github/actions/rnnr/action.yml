@@ -1,0 +1,195 @@
+name: GitLab Runner (ephemeral)
+description: >-
+  Run an ephemeral GitLab Runner inside a GitHub-hosted runner to execute GitLab
+  CI job(s), then exit. Composite action — no Node runtime, no build step.
+  Supports the docker executor (Linux runners) and shell executor (macOS/Linux).
+author: your-handle
+branding:
+  icon: server
+  color: purple
+
+inputs:
+  runner-token:
+    description: >-
+      GitLab runner authentication token (starts with "glrt-", recommended) or a
+      legacy registration token. Create the runner in GitLab
+      (Settings > CI/CD > Runners > New runner), set its tags / untagged / access
+      level there, and store the glrt- token as a GitHub Actions secret.
+    required: true
+  executor:
+    description: >-
+      GitLab executor to use, matching GitLab's own names:
+        - "docker": run each job in a container (Linux runners only; GitHub-hosted
+          macOS runners have no Docker).
+        - "shell": run jobs directly on the host. Required for macOS/Xcode builds;
+          also usable on Linux to skip containerization.
+      Leave empty to auto-select: docker on Linux, shell on macOS.
+    required: false
+    default: ''
+  gitlab-url:
+    description: Base URL of the GitLab instance.
+    required: false
+    default: https://gitlab.com/
+  description:
+    description: Runner description shown in GitLab. Defaults to "github-<run_id>".
+    required: false
+    default: ''
+  docker-image:
+    description: '[docker executor] Fallback image when a job omits `image:`.'
+    required: false
+    default: alpine:latest
+  docker-privileged:
+    description: '[docker executor] Run job containers in privileged mode (Docker-in-Docker).'
+    required: false
+    default: 'true'
+  max-builds:
+    description: Number of jobs to run before the runner exits.
+    required: false
+    default: '1'
+  wait-timeout:
+    description: >-
+      Seconds to wait for a job before exiting, so the GitHub job never hangs
+      forever. 0 = wait indefinitely.
+    required: false
+    default: '600'
+  runner-version:
+    description: '[Linux] GitLab Runner version to download, e.g. "v17.10.1", or "latest". macOS installs via Homebrew.'
+    required: false
+    default: latest
+  runner-arch:
+    description: '[Linux] Binary architecture to download.'
+    required: false
+    default: linux-amd64
+
+  # --- legacy registration-token only (ignored for glrt- tokens) ---
+  tag-list:
+    description: '[legacy only] Comma-separated runner tags. With glrt- tokens, set tags in the GitLab UI.'
+    required: false
+    default: ''
+  run-untagged:
+    description: '[legacy only] Whether the runner picks up untagged jobs.'
+    required: false
+    default: 'true'
+  access-level:
+    description: '[legacy only] not_protected or ref_protected.'
+    required: false
+    default: not_protected
+
+runs:
+  using: composite
+  steps:
+    - name: Install GitLab Runner
+      shell: bash
+      env:
+        RUNNER_VERSION: ${{ inputs.runner-version }}
+        RUNNER_ARCH: ${{ inputs.runner-arch }}
+      run: |
+        set -euo pipefail
+        config="${RUNNER_TEMP}/gitlab-runner-config.toml"
+
+        case "${RUNNER_OS}" in
+          Linux)
+            bin="${RUNNER_TEMP}/gitlab-runner"
+            url="https://gitlab-runner-downloads.s3.amazonaws.com/${RUNNER_VERSION}/binaries/gitlab-runner-${RUNNER_ARCH}"
+            echo "Downloading ${url}"
+            curl -fsSL --retry 3 -o "${bin}" "${url}"
+            chmod +x "${bin}"
+            ;;
+          macOS)
+            # Homebrew install avoids the code-signing / Gatekeeper issues that
+            # bite a raw curl-downloaded binary on Apple Silicon.
+            echo "Installing gitlab-runner via Homebrew"
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install gitlab-runner >/dev/null
+            bin="$(command -v gitlab-runner)"
+            ;;
+          *)
+            echo "::error::Unsupported runner OS: ${RUNNER_OS}. This action supports Linux and macOS."
+            exit 1
+            ;;
+        esac
+
+        "${bin}" --version
+        {
+          echo "GLR_BIN=${bin}"
+          echo "GLR_CONFIG=${config}"
+        } >> "$GITHUB_ENV"
+
+    - name: Run GitLab Runner
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.runner-token }}
+        EXECUTOR_INPUT: ${{ inputs.executor }}
+        GITLAB_URL: ${{ inputs.gitlab-url }}
+        DESCRIPTION: ${{ inputs.description }}
+        DOCKER_IMAGE: ${{ inputs.docker-image }}
+        DOCKER_PRIVILEGED: ${{ inputs.docker-privileged }}
+        MAX_BUILDS: ${{ inputs.max-builds }}
+        WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+        TAG_LIST: ${{ inputs.tag-list }}
+        RUN_UNTAGGED: ${{ inputs.run-untagged }}
+        ACCESS_LEVEL: ${{ inputs.access-level }}
+      run: |
+        set -euo pipefail
+
+        # Keep the token out of every log line, no matter what the binary prints.
+        echo "::add-mask::${TOKEN}"
+
+        : "${DESCRIPTION:=github-${GITHUB_RUN_ID}}"
+
+        # Resolve executor: explicit input wins; otherwise pick by OS.
+        executor="${EXECUTOR_INPUT}"
+        if [[ -z "${executor}" ]]; then
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then executor="shell"; else executor="docker"; fi
+        fi
+
+        # Guard the one combination that cannot work.
+        if [[ "${executor}" == "docker" && "${RUNNER_OS}" == "macOS" ]]; then
+          echo "::error::The docker executor is unavailable on GitHub-hosted macOS runners. Use executor: shell."
+          exit 1
+        fi
+
+        # Executor flags shared by register and run-single. Always >=2 elements,
+        # so expansion is safe under set -u even on macOS's bash 3.2.
+        exec_args=(--executor "${executor}")
+        if [[ "${executor}" == "docker" ]]; then
+          exec_args+=(--docker-image "${DOCKER_IMAGE}")
+          [[ "${DOCKER_PRIVILEGED}" == "true" ]] && exec_args+=(--docker-privileged)
+        fi
+
+        if [[ "${TOKEN}" == glrt-* ]]; then
+          # Modern flow: authentication token. Runner config (tags, untagged,
+          # access level) is defined server-side. No registration, no cleanup.
+          run_token="${TOKEN}"
+        else
+          echo "::warning::Legacy registration token detected. These are deprecated and disabled by default for new GitLab.com namespaces. Prefer a glrt- authentication token."
+          "${GLR_BIN}" register --non-interactive \
+            --config "${GLR_CONFIG}" \
+            --url "${GITLAB_URL}" \
+            --registration-token "${TOKEN}" \
+            --description "${DESCRIPTION}" \
+            "${exec_args[@]}" \
+            --tag-list "${TAG_LIST}" \
+            --run-untagged="${RUN_UNTAGGED}" \
+            --locked=false \
+            --access-level="${ACCESS_LEVEL}"
+          run_token="$(sed -n 's/^[[:space:]]*token[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "${GLR_CONFIG}" | head -n1)"
+          echo "::add-mask::${run_token}"
+          echo "GLR_RUN_TOKEN=${run_token}" >> "$GITHUB_ENV"   # for the cleanup step
+        fi
+
+        "${GLR_BIN}" run-single \
+          --url "${GITLAB_URL}" \
+          --token "${run_token}" \
+          "${exec_args[@]}" \
+          --max-builds "${MAX_BUILDS}" \
+          --wait-timeout "${WAIT_TIMEOUT}"
+
+    - name: Unregister (legacy tokens only)
+      if: always()
+      shell: bash
+      run: |
+        set -uo pipefail
+        if [[ -n "${GLR_RUN_TOKEN:-}" ]]; then
+          echo "::add-mask::${GLR_RUN_TOKEN}"
+          "${GLR_BIN}" unregister --url "${GITLAB_URL:-https://gitlab.com/}" --token "${GLR_RUN_TOKEN}" || true
+        fi
