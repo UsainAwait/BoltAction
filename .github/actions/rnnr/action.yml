@@ -57,9 +57,9 @@ inputs:
     required: false
     default: latest
   runner-arch:
-    description: '[Linux] Binary architecture to download.'
+    description: '[Linux] Override the downloaded binary arch (e.g. linux-amd64, linux-arm64). Empty = auto-detect from RUNNER_ARCH.'
     required: false
-    default: linux-amd64
+    default: ''
 
   # --- legacy registration-token only (ignored for glrt- tokens) ---
   tag-list:
@@ -81,8 +81,11 @@ runs:
     - name: Install GitLab Runner
       shell: bash
       env:
-        RUNNER_VERSION: ${{ inputs.runner-version }}
-        RUNNER_ARCH: ${{ inputs.runner-arch }}
+        # NOTE: do NOT name these RUNNER_* — RUNNER_ARCH/RUNNER_OS/etc. are
+        # reserved GitHub defaults and a step env: cannot override them, so the
+        # value silently becomes the built-in (e.g. RUNNER_ARCH=X64).
+        GLR_VERSION: ${{ inputs.runner-version }}
+        GLR_ARCH: ${{ inputs.runner-arch }}
       run: |
         set -euo pipefail
         config="${RUNNER_TEMP}/gitlab-runner-config.toml"
@@ -90,7 +93,16 @@ runs:
         case "${RUNNER_OS}" in
           Linux)
             bin="${RUNNER_TEMP}/gitlab-runner"
-            url="https://gitlab-runner-downloads.s3.amazonaws.com/${RUNNER_VERSION}/binaries/gitlab-runner-${RUNNER_ARCH}"
+            # Map the built-in RUNNER_ARCH to GitLab's binary naming unless overridden.
+            arch="${GLR_ARCH}"
+            if [[ -z "${arch}" ]]; then
+              case "${RUNNER_ARCH}" in
+                X64)   arch="linux-amd64" ;;
+                ARM64) arch="linux-arm64" ;;
+                *) echo "::error::Unsupported RUNNER_ARCH '${RUNNER_ARCH}'; set runner-arch explicitly."; exit 1 ;;
+              esac
+            fi
+            url="https://gitlab-runner-downloads.s3.amazonaws.com/${GLR_VERSION}/binaries/gitlab-runner-${arch}"
             echo "Downloading ${url}"
             curl -fsSL --retry 3 -o "${bin}" "${url}"
             chmod +x "${bin}"
