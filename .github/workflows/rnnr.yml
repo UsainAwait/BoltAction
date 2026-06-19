@@ -49,10 +49,14 @@ jobs:
           jobs="$(curl -sf \
             --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
             "${GITLAB_API_URL}/projects/${PROJECT_ID}/pipelines/${PIPELINE_ID}/jobs?per_page=100&scope[]=created&scope[]=pending")"
+
+          # DEBUG
+          echo "$jobs"
+          # DEBUG
  
           count_tag() { jq --arg t "$1" '[.[] | select(.tag_list | index($t))] | length' <<<"$jobs"; }
-          m="$(count_tag gh-macos)";  (( m > 20 )) && m=20
-          d="$(count_tag gh-docker)"; (( d > 20 )) && d=20
+          m="$(count_tag macos)";  (( m > 20 )) && m=20
+          d="$(count_tag docker)"; (( d > 20 )) && d=20
  
           mk() { jq -nc --argjson n "$1" '{i: [range(1; $n + 1)]}'; }
           {
