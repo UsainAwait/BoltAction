@@ -35,8 +35,8 @@ jobs:
           }
  
           # Pipeline events fire on every status transition. Act once, at start.
-          if [[ "${STATUS}" != "pending" ]]; then
-            echo "Status '${STATUS}' is not 'pending' — nothing to provision."
+          if [[ "${STATUS}" != "pending" && "${STATUS}" != "running" ]]; then
+            echo "Status '${STATUS}' is not 'pending' nor 'running' — nothing to provision."
             empty; exit 0
           fi
  
