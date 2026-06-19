@@ -17,25 +17,50 @@ jobs:
       docker_matrix: ${{ steps.gen.outputs.docker_matrix }}
       docker_n:      ${{ steps.gen.outputs.docker_n }}
     steps:
-      - name: Build per-pool fan-out matrices
+      - name: Decide what the pipeline needs
         id: gen
         env:
-          # client_payload is untrusted + unmasked: pass via env, sanitize, clamp.
-          RAW_MACOS:  ${{ github.event.client_payload.macos }}
-          RAW_DOCKER: ${{ github.event.client_payload.docker }}
+          # client_payload is untrusted + unmasked.
+          STATUS:      ${{ github.event.client_payload.status }}
+          PROJECT_ID:  ${{ github.event.client_payload.project_id }}
+          PIPELINE_ID: ${{ github.event.client_payload.pipeline_id }}
+          GITLAB_API_URL:   ${{ vars.GITLAB_API_URL || 'https://gitlab.com/api/v4' }}
+          GITLAB_API_TOKEN: ${{ secrets.GITLAB_API_TOKEN }}
         run: |
           set -euo pipefail
-          clamp() { local n="${1//[^0-9]/}"; n="${n:-0}"; (( n > 20 )) && n=20; printf '%s' "$n"; }
-          mk()    { jq -nc --argjson n "$1" '{i: [range(1; $n + 1)]}'; }
-          m="$(clamp "${RAW_MACOS}")"
-          d="$(clamp "${RAW_DOCKER}")"
+ 
+          empty() {
+            { echo "macos_n=0"; echo "docker_n=0"
+              echo 'macos_matrix={"i":[]}'; echo 'docker_matrix={"i":[]}'; } >> "$GITHUB_OUTPUT"
+          }
+ 
+          # Pipeline events fire on every status transition. Act once, at start.
+          if [[ "${STATUS}" != "pending" ]]; then
+            echo "Status '${STATUS}' is not 'pending' — nothing to provision."
+            empty; exit 0
+          fi
+ 
+          # Untrusted values land in an API URL: require integers.
+          [[ "${PROJECT_ID}"  =~ ^[0-9]+$ ]] || { echo "::error::bad project_id";  exit 1; }
+          [[ "${PIPELINE_ID}" =~ ^[0-9]+$ ]] || { echo "::error::bad pipeline_id"; exit 1; }
+ 
+          # Ask GitLab what this pipeline contains (jobs not yet started).
+          # NOTE: counts up to 100 jobs; add pagination if a pipeline exceeds that.
+          jobs="$(curl -sf \
+            --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+            "${GITLAB_API_URL}/projects/${PROJECT_ID}/pipelines/${PIPELINE_ID}/jobs?per_page=100&scope[]=created&scope[]=pending")"
+ 
+          count_tag() { jq --arg t "$1" '[.[] | select(.tag_list | index($t))] | length' <<<"$jobs"; }
+          m="$(count_tag gh-macos)";  (( m > 20 )) && m=20
+          d="$(count_tag gh-docker)"; (( d > 20 )) && d=20
+ 
+          mk() { jq -nc --argjson n "$1" '{i: [range(1; $n + 1)]}'; }
           {
-            echo "macos_n=${m}"
-            echo "docker_n=${d}"
-            echo "macos_matrix=$(mk "$m")"
-            echo "docker_matrix=$(mk "$d")"
+            echo "macos_n=${m}";  echo "docker_n=${d}"
+            echo "macos_matrix=$(mk "$m")"; echo "docker_matrix=$(mk "$d")"
           } >> "$GITHUB_OUTPUT"
-          echo "macOS runners: ${m}   docker runners: ${d}"
+          echo "Pipeline ${PIPELINE_ID} needs ${m} macOS + ${d} docker runner(s)."
+
 
   runner-macos:
     needs: setup
