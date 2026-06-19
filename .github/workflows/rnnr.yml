@@ -3,7 +3,7 @@ run-name: Rnnrs for pipeline ${{ github.event.client_payload.pipeline_id }}
 
 on:
   repository_dispatch:
-    types: [run-gitlab-runners]
+    types: [run]
 
 permissions:
   contents: read
