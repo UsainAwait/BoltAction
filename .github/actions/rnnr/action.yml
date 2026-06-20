@@ -53,10 +53,7 @@ inputs:
     required: false
     default: '600'
   log-level:
-    description: >-
-      gitlab-runner log verbosity: panic, fatal, error, warning, info, debug.
-      Default "warning" suppresses the routine INFO lines (repo URL, runner URL,
-      job/correlation IDs); the real job trace lives in the GitLab UI regardless.
+    description: panic, fatal, error, warning (default), info, debug.
     required: false
     default: warning
   runner-version:
