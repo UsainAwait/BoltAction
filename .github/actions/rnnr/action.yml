@@ -52,6 +52,10 @@ inputs:
       forever. 0 = wait indefinitely.
     required: false
     default: '600'
+  log-level:
+    description: panic, fatal, error, warning (default), info, debug.
+    required: false
+    default: warning
   runner-version:
     description: '[Linux] GitLab Runner version to download, e.g. "v17.10.1", or "latest". macOS installs via Homebrew.'
     required: false
@@ -137,6 +141,7 @@ runs:
         DOCKER_PRIVILEGED: ${{ inputs.docker-privileged }}
         MAX_BUILDS: ${{ inputs.max-builds }}
         WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+        LOG_LEVEL: ${{ inputs.log-level }}
         TAG_LIST: ${{ inputs.tag-list }}
         RUN_UNTAGGED: ${{ inputs.run-untagged }}
         ACCESS_LEVEL: ${{ inputs.access-level }}
@@ -174,7 +179,7 @@ runs:
           run_token="${TOKEN}"
         else
           echo "::warning::Legacy registration token detected. These are deprecated and disabled by default for new GitLab.com namespaces. Prefer a glrt- authentication token."
-          "${GLR_BIN}" register --non-interactive \
+          "${GLR_BIN}" --log-level "${LOG_LEVEL}" register --non-interactive \
             --config "${GLR_CONFIG}" \
             --url "${GITLAB_URL}" \
             --registration-token "${TOKEN}" \
@@ -189,7 +194,7 @@ runs:
           echo "GLR_RUN_TOKEN=${run_token}" >> "$GITHUB_ENV"   # for the cleanup step
         fi
 
-        "${GLR_BIN}" run-single \
+        "${GLR_BIN}" --log-level "${LOG_LEVEL}" run-single \
           --url "${GITLAB_URL}" \
           --token "${run_token}" \
           "${exec_args[@]}" \
