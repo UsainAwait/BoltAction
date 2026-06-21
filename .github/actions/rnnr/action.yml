@@ -53,19 +53,13 @@ inputs:
     required: false
     default: '600'
   log-level:
-    description: >-
-      gitlab-runner log verbosity: panic, fatal, error, warning, info, debug.
-      Default "warning" suppresses the routine INFO lines (repo URL, runner URL,
-      job/correlation IDs); the real job trace lives in the GitLab UI regardless.
+    description: panic, fatal, error, warning (default), info, debug.
     required: false
     default: warning
   feature-flags:
     description: >-
       Optional runner feature flags, one KEY=value per line (values are TOML
-      booleans, e.g. FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true). When set, the
-      runner is registered with a generated config.toml carrying
-      [runners.feature_flags] and run via that file. Empty = the simpler
-      tokenless run-single path.
+      booleans, e.g. FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true).
     required: false
     default: ''
   runner-version:
