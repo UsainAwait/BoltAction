@@ -74,6 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: nixbuild/nix-quick-install-action@889f3180bb5f064ee9e3201428d04ae9e41d54ad #v31
+      - run: nix profile install --accept-flake-config github:cachix/devenv/v1.11.2
       - name: Ephemeral GitLab Runner (shell)
         uses: ./.github/actions/rnnr
         with:
