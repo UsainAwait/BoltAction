@@ -100,6 +100,8 @@ jobs:
           executor: docker
           docker-image: docker:27
           docker-privileged: 'true'
+          feature-flags: |
+            FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true
           description: gh-${{ github.run_id }}-docker-${{ matrix.i }}
           wait-timeout: '600'
           max-builds: '1'

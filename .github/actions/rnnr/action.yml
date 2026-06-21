@@ -56,6 +56,12 @@ inputs:
     description: panic, fatal, error, warning (default), info, debug.
     required: false
     default: warning
+  feature-flags:
+    description: >-
+      Optional runner feature flags, one KEY=value per line (values are TOML
+      booleans, e.g. FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true).
+    required: false
+    default: ''
   runner-version:
     description: '[Linux] GitLab Runner version to download, e.g. "v17.10.1", or "latest". macOS installs via Homebrew.'
     required: false
@@ -142,6 +148,7 @@ runs:
         MAX_BUILDS: ${{ inputs.max-builds }}
         WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
         LOG_LEVEL: ${{ inputs.log-level }}
+        FEATURE_FLAGS: ${{ inputs.feature-flags }}
         TAG_LIST: ${{ inputs.tag-list }}
         RUN_UNTAGGED: ${{ inputs.run-untagged }}
         ACCESS_LEVEL: ${{ inputs.access-level }}
@@ -173,17 +180,46 @@ runs:
           [[ "${DOCKER_PRIVILEGED}" == "true" ]] && exec_args+=(--docker-privileged)
         fi
 
+        # Optional feature-flags template. When present we MUST run via a config
+        # file, because run-single --token ignores config (and thus the flags).
+        template=""
+        if [[ -n "${FEATURE_FLAGS//[[:space:]]/}" ]]; then
+          template="${RUNNER_TEMP}/gitlab-runner-template.toml"
+          {
+            echo "[[runners]]"
+            echo "  [runners.feature_flags]"
+            while IFS= read -r ff; do
+              ff="${ff//[[:space:]]/}"; [[ -z "${ff}" ]] && continue
+              # Values are emitted unquoted: TOML feature_flags must be booleans.
+              printf '    %s = %s\n' "${ff%%=*}" "${ff#*=}"
+            done <<< "${FEATURE_FLAGS}"
+          } > "${template}"
+        fi
+
+        tmpl_args=()
+        [[ -n "${template}" ]] && tmpl_args+=(--template-config "${template}")
+
+        run_via_config=false
+
         if [[ "${TOKEN}" == glrt-* ]]; then
-          # Modern flow: authentication token. Runner config (tags, untagged,
-          # access level) is defined server-side. No registration, no cleanup.
-          run_token="${TOKEN}"
+          if [[ -n "${template}" ]]; then
+            # Need a config file so the flags apply: register locally (no new
+            # server-side runner is created for an auth token), then run via -c.
+            "${GLR_BIN}" --log-level "${LOG_LEVEL}" register --non-interactive \
+              --config "${GLR_CONFIG}" "${tmpl_args[@]}" \
+              --url "${GITLAB_URL}" --token "${TOKEN}" --name "${DESCRIPTION}" \
+              "${exec_args[@]}"
+            run_via_config=true
+          else
+            run_token="${TOKEN}"
+          fi
         else
           echo "::warning::Legacy registration token detected. These are deprecated and disabled by default for new GitLab.com namespaces. Prefer a glrt- authentication token."
           "${GLR_BIN}" --log-level "${LOG_LEVEL}" register --non-interactive \
-            --config "${GLR_CONFIG}" \
+            --config "${GLR_CONFIG}" "${tmpl_args[@]+"${tmpl_args[@]}"}" \
             --url "${GITLAB_URL}" \
             --registration-token "${TOKEN}" \
-            --description "${DESCRIPTION}" \
+            --name "${DESCRIPTION}" \
             "${exec_args[@]}" \
             --tag-list "${TAG_LIST}" \
             --run-untagged="${RUN_UNTAGGED}" \
@@ -192,14 +228,22 @@ runs:
           run_token="$(sed -n 's/^[[:space:]]*token[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "${GLR_CONFIG}" | head -n1)"
           echo "::add-mask::${run_token}"
           echo "GLR_RUN_TOKEN=${run_token}" >> "$GITHUB_ENV"   # for the cleanup step
+          run_via_config=true   # use the config we just wrote, so flags apply
         fi
 
-        "${GLR_BIN}" --log-level "${LOG_LEVEL}" run-single \
-          --url "${GITLAB_URL}" \
-          --token "${run_token}" \
-          "${exec_args[@]}" \
-          --max-builds "${MAX_BUILDS}" \
-          --wait-timeout "${WAIT_TIMEOUT}"
+        if [[ "${run_via_config}" == true ]]; then
+          "${GLR_BIN}" --log-level "${LOG_LEVEL}" run-single \
+            --config "${GLR_CONFIG}" --runner "${DESCRIPTION}" \
+            --max-builds "${MAX_BUILDS}" \
+            --wait-timeout "${WAIT_TIMEOUT}"
+        else
+          "${GLR_BIN}" --log-level "${LOG_LEVEL}" run-single \
+            --url "${GITLAB_URL}" \
+            --token "${run_token}" \
+            "${exec_args[@]}" \
+            --max-builds "${MAX_BUILDS}" \
+            --wait-timeout "${WAIT_TIMEOUT}"
+        fi
 
     - name: Unregister (legacy tokens only)
       if: always()
